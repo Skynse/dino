@@ -2,7 +2,7 @@ mod frame;
 mod frame_cache;
 mod media;
 mod playback;
-mod proxy_generator;
+
 mod settings;
 mod timeline;
 mod video_decoder;
@@ -14,20 +14,14 @@ use frame::Frame;
 use frame_cache::FrameCache;
 use media::{Media, MediaLibrary, VideoFile};
 use playback::PlaybackState;
-use proxy_generator::ProxyGenerator;
+
 use settings::EditorSettings;
 use timeline::{DraggedMedia, TimeLine};
 
 fn main() {
-    // Initialize GStreamer
-    if let Err(e) = gstreamer::init() {
-        eprintln!("Failed to initialize GStreamer: {}", e);
-        std::process::exit(1);
-    }
-
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
-        "Dino",
+        "Video Editor",
         native_options,
         Box::new(|cc| Ok(Box::new(VideoEditorApp::new(cc)))),
     );
@@ -76,7 +70,6 @@ struct VideoEditorApp {
     settings: EditorSettings,
     preview_frame: Option<Frame>,
     frame_cache: FrameCache,
-    proxy_generator: ProxyGenerator,
 }
 
 impl VideoEditorApp {
@@ -88,37 +81,7 @@ impl VideoEditorApp {
             settings: EditorSettings::default(),
             preview_frame: None,
             frame_cache: FrameCache::new(),
-            proxy_generator: ProxyGenerator::default(),
         }
-    }
-
-    fn regenerate_all_proxies(&self) {
-        if !self.settings.proxy_enabled {
-            return;
-        }
-
-        let proxy_settings = self.settings.get_proxy_settings();
-
-        // Regenerate proxies for all videos in the media library
-        for video in &self.media_library.videos {
-            self.proxy_generator
-                .request_proxy(&video.path, proxy_settings.clone(), 5);
-        }
-
-        // Also regenerate for any videos currently in the timeline
-        for track in &self.timeline.tracks {
-            for clip in &track.clips {
-                if let Media::Video(video_path) = &clip.media {
-                    self.proxy_generator
-                        .request_proxy(video_path, proxy_settings.clone(), 8);
-                }
-            }
-        }
-    }
-
-    fn clear_all_proxies(&self) {
-        // This would clear the proxy cache - for now just cleanup old ones
-        self.proxy_generator.cleanup_old_proxies(0);
     }
 
     fn update_preview_frame(&mut self) {
@@ -164,93 +127,12 @@ impl VideoEditorApp {
     }
 
     fn decode_frame_at_time(&mut self, video_path: &str, time: f32) -> Option<Frame> {
-        // Get the effective video path (proxy or original)
-        let effective_path = self.get_effective_video_path(video_path);
-
-        // Validate file exists before proceeding
-        if !std::path::Path::new(&effective_path).exists() {
-            println!("WARNING: File does not exist: {}", effective_path);
-            return Some(self.create_video_frame(&effective_path, time, 640, 480));
+        // Only fallback frame logic remains
+        if !std::path::Path::new(video_path).exists() {
+            println!("WARNING: File does not exist: {}", video_path);
+            return Some(self.create_video_frame(video_path, time, 640, 480));
         }
-
-        println!(
-            "Decoding frame at time {:.2}s from path: {}",
-            time, effective_path
-        );
-
-        // Try to get from cache first
-        if let Some(frame) = self.frame_cache.get_frame(&effective_path, time) {
-            println!(
-                "Found cached frame for {} at time {:.2}s",
-                effective_path, time
-            );
-            return Some(frame);
-        } else {
-            println!(
-                "No cached frame for {} at time {:.2}s",
-                effective_path, time
-            );
-        }
-
-        // I                mplement a retry mechanism for decoder creation
-        use crate::video_decoder::VideoDecoder;
-        let mut retry_count = 0;
-        let max_retries = 3;
-
-        while retry_count < max_retries {
-            match VideoDecoder::new(&effective_path) {
-                Ok(mut decoder) => {
-                    // Successfully created decoder, now try to get the frame
-                    match decoder.get_frame_at_time(time) {
-                        Some(frame) => {
-                            // Add the frame to the cache for future use
-                            self.frame_cache
-                                .add_frame(&effective_path, time, frame.clone());
-                            return Some(frame);
-                        }
-
-                        None => {
-                            println!(
-                                "Could not get frame at time {:.2}s, attempt {}/{}",
-                                time,
-                                retry_count + 1,
-                                max_retries
-                            );
-                            // If this is the last retry, break out to fallback
-                            if retry_count == max_retries - 1 {
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("Error creating decoder for {}: {}", effective_path, e);
-                    // If this is a file access error, break immediately
-                    if e.to_string().contains("No such file")
-                        || e.to_string().contains("Permission denied")
-                    {
-                        break;
-                    }
-                }
-            }
-
-            retry_count += 1;
-            if retry_count < max_retries {
-                println!(
-                    "Retrying decoder creation, attempt {}/{}",
-                    retry_count + 1,
-                    max_retries
-                );
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
-
-        // If still no frame, generate a fallback
-        println!(
-            "Generating fallback frame for {} at time {:.2}s",
-            effective_path, time
-        );
-        Some(self.create_video_frame(&effective_path, time, 640, 480))
+        Some(self.create_video_frame(video_path, time, 640, 480))
     }
 
     fn create_video_frame(&self, video_path: &str, time: f32, width: u32, height: u32) -> Frame {
@@ -336,16 +218,6 @@ impl VideoEditorApp {
 
         self.timeline.tracks[track_index].clips.push(video_clip);
 
-        // Request proxy generation if enabled
-        if self.settings.proxy_enabled && self.settings.auto_generate_proxies {
-            let proxy_settings = self.settings.get_proxy_settings();
-            // Higher priority for smaller files or newer additions
-            let priority = if video_file.duration < 60.0 { 10 } else { 5 };
-
-            self.proxy_generator
-                .request_proxy(&video_file.path, proxy_settings, priority);
-        }
-
         // For the simplified frame cache, we don't do background preloading
         // Frames will be loaded on-demand when they're needed
 
@@ -376,31 +248,6 @@ impl VideoEditorApp {
     }
 
     fn get_effective_video_path(&self, original_path: &str) -> String {
-        if self.settings.proxy_enabled {
-            let proxy_settings = self.settings.get_proxy_settings();
-            if let Some(proxy_path) = self
-                .proxy_generator
-                .get_proxy_path(original_path, &proxy_settings)
-            {
-                println!(
-                    "Using proxy path: {} for original: {}",
-                    proxy_path, original_path
-                );
-                // Check if the proxy file actually exists and is not empty
-                if !std::path::Path::new(&proxy_path).exists() {
-                    println!("WARNING: Proxy file does not exist: {}", proxy_path);
-                    return original_path.to_string();
-                }
-                // Verify the file has content
-                if let Ok(metadata) = std::fs::metadata(&proxy_path) {
-                    if metadata.len() == 0 {
-                        println!("WARNING: Proxy file is empty: {}", proxy_path);
-                        return original_path.to_string();
-                    }
-                }
-                return proxy_path;
-            }
-        }
         original_path.to_string()
     }
 
@@ -500,19 +347,6 @@ impl VideoEditorApp {
                             let path_str = path.to_string_lossy().to_string();
                             if let Some(video_file) = VideoFile::from_path(&path_str) {
                                 self.media_library.videos.push(video_file.clone());
-
-                                // Auto-generate proxy if enabled
-                                if self.settings.proxy_enabled
-                                    && self.settings.auto_generate_proxies
-                                {
-                                    let proxy_settings = self.settings.get_proxy_settings();
-                                    // High priority for newly imported media
-                                    self.proxy_generator.request_proxy(
-                                        &video_file.path,
-                                        proxy_settings,
-                                        15,
-                                    );
-                                }
                             }
                         }
                         ui.close_menu();
@@ -544,17 +378,6 @@ impl VideoEditorApp {
                         ui.close_menu();
                     }
                 });
-
-                // Show proxy generation status
-                if self.settings.proxy_enabled {
-                    ui.separator();
-                    let (total_proxies, ready_proxies, _) = self.proxy_generator.get_cache_stats();
-                    if total_proxies > ready_proxies {
-                        ui.colored_label(egui::Color32::YELLOW, "⏳ Generating proxies...");
-                    } else if ready_proxies > 0 {
-                        ui.colored_label(egui::Color32::GREEN, "✅ Proxies ready");
-                    }
-                }
             });
         });
     }
@@ -573,44 +396,10 @@ impl VideoEditorApp {
                         let path_str = path.to_string_lossy().to_string();
                         if let Some(video_file) = VideoFile::from_path(&path_str) {
                             self.media_library.videos.push(video_file.clone());
-
-                            // Auto-generate proxy if enabled
-                            if self.settings.proxy_enabled && self.settings.auto_generate_proxies {
-                                let proxy_settings = self.settings.get_proxy_settings();
-                                // High priority for newly imported media
-                                self.proxy_generator.request_proxy(
-                                    &video_file.path,
-                                    proxy_settings,
-                                    15,
-                                );
-                            }
                         }
                     }
                 }
             });
-
-            // Proxy cache statistics
-            if self.settings.proxy_enabled {
-                ui.separator();
-                let (total_proxies, ready_proxies, total_size) =
-                    self.proxy_generator.get_cache_stats();
-                ui.horizontal(|ui| {
-                    ui.small("📦 Proxy Cache:");
-                    ui.small(format!("{}/{} ready", ready_proxies, total_proxies));
-                    ui.small(format!("({:.1}MB)", total_size as f64 / 1024.0 / 1024.0));
-                });
-                if ui.small_button("Clean Old Proxies").clicked() {
-                    self.proxy_generator
-                        .cleanup_old_proxies(self.settings.proxy_cache_max_age_hours);
-                }
-                if ui.small_button("Regenerate All").clicked() {
-                    self.regenerate_all_proxies();
-                }
-                if ui.small_button("Clear All").clicked() {
-                    self.clear_all_proxies();
-                }
-                ui.separator();
-            }
 
             let mut video_to_delete = None;
             for (video_index, video) in self.media_library.videos.iter().enumerate() {
@@ -631,26 +420,6 @@ impl VideoEditorApp {
                                     .unwrap_or_default()
                                     .to_string_lossy(),
                             );
-
-                            // Show proxy status if proxies are enabled
-                            if self.settings.proxy_enabled {
-                                let proxy_settings = self.settings.get_proxy_settings();
-                                if let Some(proxy_info) = self
-                                    .proxy_generator
-                                    .get_proxy_info(&video.path, &proxy_settings)
-                                {
-                                    if proxy_info.is_ready {
-                                        ui.small("✅");
-                                    } else {
-                                        ui.small(format!(
-                                            "⏳{:.0}%",
-                                            proxy_info.generation_progress * 100.0
-                                        ));
-                                    }
-                                } else if self.settings.auto_generate_proxies {
-                                    ui.small("⏸");
-                                }
-                            }
                         });
                         ui.horizontal(|ui| {
                             ui.small(format!("{}x{}", video.resolution.0, video.resolution.1));
@@ -711,127 +480,12 @@ impl VideoEditorApp {
 
             // Show properties of the selected clip
             if let Some(clip) = self.timeline.get_selected_clip() {
-                if let Media::Video(video_path) = &clip.media {
+                if let Media::Video(_video_path) = &clip.media {
                     ui.separator();
                     ui.label("Selected Clip:");
                     ui.small(format!("Duration: {:.2}s", clip.duration));
                     ui.small(format!("Start: {:.2}s", clip.start_time));
-
-                    if self.settings.proxy_enabled {
-                        ui.separator();
-                        ui.label("Proxy Status:");
-
-                        let proxy_settings = self.settings.get_proxy_settings();
-                        if let Some(proxy_info) = self
-                            .proxy_generator
-                            .get_proxy_info(video_path, &proxy_settings)
-                        {
-                            if proxy_info.is_ready {
-                                ui.colored_label(egui::Color32::GREEN, "✅ Proxy Ready");
-                                ui.small(format!(
-                                    "Size: {:.1}MB",
-                                    proxy_info.file_size as f64 / 1024.0 / 1024.0
-                                ));
-                            } else {
-                                ui.colored_label(egui::Color32::YELLOW, "⏳ Generating...");
-                                ui.add(
-                                    egui::ProgressBar::new(proxy_info.generation_progress).text(
-                                        format!("{:.0}%", proxy_info.generation_progress * 100.0),
-                                    ),
-                                );
-                            }
-                        } else {
-                            ui.colored_label(egui::Color32::GRAY, "No proxy");
-                            if ui.button("Generate Proxy").clicked() {
-                                self.proxy_generator
-                                    .request_proxy(video_path, proxy_settings, 20);
-                            }
-                        }
-                    }
                 }
-            }
-
-            ui.separator();
-            ui.label("Proxy Settings:");
-            ui.checkbox(&mut self.settings.proxy_enabled, "Enable Proxies");
-
-            if self.settings.proxy_enabled {
-                ui.checkbox(&mut self.settings.auto_generate_proxies, "Auto-generate");
-
-                egui::ComboBox::from_label("Quality")
-                    .selected_text(format!("{:?}", self.settings.proxy_quality))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.settings.proxy_quality,
-                            crate::settings::ProxyQuality::Draft,
-                            "Draft",
-                        );
-                        ui.selectable_value(
-                            &mut self.settings.proxy_quality,
-                            crate::settings::ProxyQuality::Preview,
-                            "Preview",
-                        );
-                        ui.selectable_value(
-                            &mut self.settings.proxy_quality,
-                            crate::settings::ProxyQuality::High,
-                            "High",
-                        );
-                    });
-
-                let mut resolution_index = match self.settings.proxy_resolution {
-                    (320, 180) => 0,
-                    (480, 270) => 1,
-                    (640, 360) => 2,
-                    _ => 1,
-                };
-
-                egui::ComboBox::from_label("Resolution")
-                    .selected_text(format!(
-                        "{}x{}",
-                        self.settings.proxy_resolution.0, self.settings.proxy_resolution.1
-                    ))
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_value(&mut resolution_index, 0, "320x180")
-                            .clicked()
-                        {
-                            self.settings.proxy_resolution = (320, 180);
-                        }
-                        if ui
-                            .selectable_value(&mut resolution_index, 1, "480x270")
-                            .clicked()
-                        {
-                            self.settings.proxy_resolution = (480, 270);
-                        }
-                        if ui
-                            .selectable_value(&mut resolution_index, 2, "640x360")
-                            .clicked()
-                        {
-                            self.settings.proxy_resolution = (640, 360);
-                        }
-                    });
-
-                ui.separator();
-                ui.label("Proxy Management:");
-                ui.horizontal(|ui| {
-                    if ui.button("Regenerate All Proxies").clicked() {
-                        self.regenerate_all_proxies();
-                    }
-                    if ui.button("Clear Cache").clicked() {
-                        self.clear_all_proxies();
-                    }
-                });
-
-                let mut max_age = self.settings.proxy_cache_max_age_hours;
-                ui.horizontal(|ui| {
-                    ui.label("Cache age limit:");
-                    if ui
-                        .add(egui::Slider::new(&mut max_age, 1..=168).suffix("h"))
-                        .changed()
-                    {
-                        self.settings.proxy_cache_max_age_hours = max_age;
-                    }
-                });
             }
         });
     }
@@ -959,14 +613,8 @@ impl VideoEditorApp {
                     let path_copy = effective_path.clone();
                     let time = *relative_time;
                     use crate::video_decoder::VideoDecoder;
-                    if let Ok(mut decoder) = VideoDecoder::new(&path_copy) {
-                        if let Some(frame) = decoder.get_frame_at_time(time) {
-                            // We can't access self here, so we just get the frame
-                            // and don't cache it - this is just for preloading
-                            // and the cache will be populated on actual access
-                            println!("Preloaded frame at time {:.2}s", time);
-                        }
-                    }
+                    // Preloading stub: decoder removed
+                    println!("Preloading frame at time {:.2}s for {}", time, path_copy);
                 })) {
                     Ok(_) => {}
                     Err(e) => println!("Error during frame preloading: {:?}", e),

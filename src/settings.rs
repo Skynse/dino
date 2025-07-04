@@ -12,11 +12,6 @@ pub struct EditorSettings {
     pub track_height: f32,
     pub thumbnail_size: f32,
     pub cache_limit: usize, // number of frames to cache
-    pub proxy_enabled: bool,
-    pub proxy_quality: ProxyQuality,
-    pub proxy_resolution: (u32, u32),
-    pub auto_generate_proxies: bool,
-    pub proxy_cache_max_age_hours: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,13 +20,6 @@ pub enum PreviewQuality {
     Medium, // 480p
     High,   // 720p
     Ultra,  // 1080p
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ProxyQuality {
-    Draft,   // Very low quality, fast generation
-    Preview, // Medium quality, good for editing
-    High,    // High quality, slower generation
 }
 
 impl Default for EditorSettings {
@@ -49,11 +37,6 @@ impl Default for EditorSettings {
             track_height: 40.0,
             thumbnail_size: 16.0,
             cache_limit: 50,
-            proxy_enabled: true,
-            proxy_quality: ProxyQuality::Preview,
-            proxy_resolution: (480, 270),
-            auto_generate_proxies: true,
-            proxy_cache_max_age_hours: 24,
         }
     }
 }
@@ -98,30 +81,6 @@ impl EditorSettings {
 
     pub fn set_cache_limit(&mut self, limit: usize) {
         self.cache_limit = limit.max(10).min(1000);
-    }
-
-    pub fn set_proxy_quality(&mut self, quality: ProxyQuality) {
-        self.proxy_quality = quality;
-    }
-
-    pub fn toggle_proxy_enabled(&mut self) {
-        self.proxy_enabled = !self.proxy_enabled;
-    }
-
-    pub fn set_proxy_resolution(&mut self, resolution: (u32, u32)) {
-        self.proxy_resolution = resolution;
-    }
-
-    pub fn get_proxy_settings(&self) -> crate::proxy_generator::ProxySettings {
-        crate::proxy_generator::ProxySettings {
-            resolution: self.proxy_resolution,
-            frame_rate: self.default_frame_rate,
-            quality: match self.proxy_quality {
-                ProxyQuality::Draft => crate::proxy_generator::ProxyQuality::Draft,
-                ProxyQuality::Preview => crate::proxy_generator::ProxyQuality::Preview,
-                ProxyQuality::High => crate::proxy_generator::ProxyQuality::High,
-            },
-        }
     }
 
     pub fn validate(&mut self) {
